@@ -1,8 +1,8 @@
 #!/bin/bash
 
-filename=pbspro_19.1.1.centos7.zip
+pbs_version=19.1.1
+filename=pbspro_$pbs_version.centos7.zip
 if [ ! -f "$filename" ];then
-    wget http://wpc.23a7.iotacdn.net/8023A7/origin2/rl/PBS-Open/pbspro_19.1.1.centos7.zip
-    unzip pbspro_19.1.1.centos7.zip
+    wget -q https://github.com/PBSPro/pbspro/releases/download/v$pbs_version/$filename
+    unzip $filename
 fi
-
