@@ -2,6 +2,7 @@ import argparse
 import datetime
 import json
 import os
+import re
 import shutil
 import sys
 import textwrap
@@ -85,13 +86,13 @@ def do_init(args):
                         )
                     )
                     log.debug(f"copying file: {oldfile} -> {newfile}")
-                    shutil.copy(oldfile, newfile)
+                    shutil.copy(oldfile, newfile, follow_symlinks=False)
 
         # get vars
         vset = {}
         if args.vars:
             for vp in args.vars.split(","):
-                vk, vv = vp.split("=")
+                vk, vv = vp.split("=", 1)
                 vset[vk] = vv
             
             for root, dirs, files in os.walk(args.dir):
@@ -157,6 +158,8 @@ def do_connect(args):
     log.debug("Getting resource name")
 
     rtype = c.read_value(f"resources.{args.resource}.type", "hostname")
+    rimage = c.read_value(f"resources.{args.resource}.image", "hostname")
+    log.debug(f"image is - {rimage}")
 
     target = args.resource
 
@@ -183,34 +186,59 @@ def do_connect(args):
         log.debug(f"Unknown resource type - {rtype}")
         sys.exit(1)
 
-    ssh_exe = "ssh"
-    cmdline = []
-    if len(args.args) > 0:
-        cmdline.append(" ".join(args.args))
+    ros = rimage.split(':')
+    if ros[0] == "MicrosoftWindowsServer" or ros[0] == "MicrosoftWindowsDesktop":
+        log.debug(f"os is - {ros[0]} for node {args.resource}")
+        fqdn = azutil.get_fqdn(c.read_value("resource_group"), args.resource+"_pip")
+        winpassword = c.read_value("variables.win_password")
+        log.debug(f"fqdn is {fqdn} for node {args.resource}")
+        cmdkey_exe = "cmdkey.exe"
+        mstsc_exe = "mstsc.exe"
+        cmdline = []
+        if len(args.args) > 0:
+            cmdline.append(" ".join(args.args))
 
-    if args.resource == jumpbox:
-        log.info("logging directly into {}".format(fqdn))
-        ssh_args = [
-            "ssh", "-t", "-q", 
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-i", ssh_private_key,
-            f"{sshuser}@{fqdn}"
-        ]
-        log.debug(" ".join(ssh_args + cmdline))
-        os.execvp(ssh_exe, ssh_args + cmdline)
-    else:
-        log.info("logging in to {} (via {})".format(target, fqdn))
-        ssh_args = [
-            ssh_exe, "-t", "-q",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-i", ssh_private_key,
-            "-o", f"ProxyCommand=ssh -i {ssh_private_key} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -W %h:%p {sshuser}@{fqdn}",
-            f"{sshuser}@{target}"
-        ]
-        log.debug(" ".join(ssh_args + cmdline))
-        os.execvp(ssh_exe, ssh_args + cmdline)
+        cmdkey_args = [
+            "cmdkey.exe", f"/generic:{fqdn}", f"/user:{sshuser}", f"/password:{winpassword}"
+            ]
+        mstsc_args = [
+            "mstsc.exe", f"/v:{fqdn}"
+            ]
+        log.debug(" ".join(cmdkey_args + cmdline))
+        cmdkey_cmdline = " ".join(cmdkey_args)
+        os.system(cmdkey_cmdline)
+        log.debug(" ".join(mstsc_args + cmdline))
+        os.execvp(mstsc_exe, mstsc_args)
+
+    else: 
+        ssh_exe = "ssh"
+        cmdline = []
+        if len(args.args) > 0:
+            cmdline.append(" ".join(args.args))
+
+        if args.resource == jumpbox:
+            log.info("logging directly into {}".format(fqdn))
+            ssh_args = [
+                "ssh", "-t", "-q", 
+                "-o", "StrictHostKeyChecking=no",
+                "-o", "UserKnownHostsFile=/dev/null",
+                "-i", ssh_private_key,
+                f"{sshuser}@{fqdn}"
+            ]
+            log.debug(" ".join(ssh_args + cmdline))
+            os.execvp(ssh_exe, ssh_args + cmdline)
+        else:
+            log.info("logging in to {} (via {})".format(target, fqdn))
+            ssh_args = [
+                ssh_exe, "-t", "-q",
+                "-o", "StrictHostKeyChecking=no",
+                "-o", "UserKnownHostsFile=/dev/null",
+                "-i", ssh_private_key,
+                "-o", f"ProxyCommand=ssh -i {ssh_private_key} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -W %h:%p {sshuser}@{fqdn}",
+                f"{sshuser}@{target}"
+            ]
+            log.debug(" ".join(ssh_args + cmdline))
+            os.execvp(ssh_exe, ssh_args + cmdline)
 
 def _exec_command(fqdn, sshuser, sshkey, cmdline):
     ssh_exe = "ssh"
@@ -260,16 +288,17 @@ def do_run(args):
         log.error(f"Missing 'install_from' property")
         sys.exit(1)
 
+    # TODO : Why is this unused ?
     resource_group = c.read_value("resource_group")
     fqdn = c.get_install_from_destination()
 
     hosts = []
     if args.nodes:
-        for r in args.nodes.split(" "):
+        for r in args.nodes.split(","):
             rtype = c.read_value(f"resources.{r}.type")
             if not rtype:
-                log.error(f"resource {r} does not exist in config")
-                sys.exit(1)
+                log.debug(f"resource {r} does not exist in config")
+                hosts.append(r)
             if rtype == "vm":
                 instances = c.read_value(f"resources.{r}.instances", 1)
                 if instances == 1:
@@ -286,21 +315,7 @@ def do_run(args):
     cmd = " ".join(args.args)
     _exec_command(fqdn, sshuser, ssh_private_key, f"pssh -H '{hostlist}' -i -t 0 '{cmd}'")
 
-def do_build(args):
-    log.debug(f"reading config file ({args.config_file})")
-    tmpdir = "azhpc_install_" + os.path.basename(args.config_file)[:-5]
-    log.debug(f"tmpdir = {tmpdir}")
-    if os.path.isdir(tmpdir):
-        log.debug("removing existing tmp directory")
-        shutil.rmtree(tmpdir)
-
-    c = azconfig.ConfigFile()
-    c.open(args.config_file)
-    config = c.preprocess()
-
-    adminuser = config["admin_user"]
-    private_key_file = adminuser+"_id_rsa"
-    public_key_file = adminuser+"_id_rsa.pub"
+def _create_private_key(private_key_file, public_key_file):
     if not (os.path.exists(private_key_file) and os.path.exists(public_key_file)):
         # create ssh keys
         key = rsa.generate_private_key(
@@ -323,45 +338,13 @@ def do_build(args):
             os.chmod(public_key_file, 0o644)
             f.write(public_key+b'\n')
 
-    tpl = arm.ArmTemplate()
-    tpl.read(config)
-
-    output_template = "deploy_"+args.config_file
-
-    log.info("writing out arm template to " + output_template)
-    with open(output_template, "w") as f:
-        f.write(tpl.to_json())
-
-    log.info("creating resource group " + config["resource_group"])
-
-    resource_tags = config.get("resource_tags", {})
-    azutil.create_resource_group(
-        config["resource_group"],
-        config["location"],
-        [
-            {
-                "key": "CreatedBy",
-                "value": os.getenv("USER")
-            },
-            {
-                "key": "CreatedOn",
-                "value": datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-            }
-        ] + [ { "key": key, "value": resource_tags[key] } for key in resource_tags.keys() ]
-    )
-    log.info("deploying arm template")
-    deployname = azutil.deploy(
-        config["resource_group"],
-        output_template
-    )
-    log.debug(f"deployment name: {deployname}")
-
+def _wait_for_deployment(resource_group, deploy_name):
     building = True
     success = True
     del_lines = 1
     while building:
         time.sleep(5)
-        res = azutil.get_deployment_status(config["resource_group"], deployname)
+        res = azutil.get_deployment_status(resource_group, deploy_name)
         log.debug(res)
         
         print("\033[F"*del_lines)
@@ -404,13 +387,149 @@ def do_build(args):
                         for line in error_message[1:]:
                             print(f"             {line}")
                         if "details" in props["statusMessage"]["error"]:
-                            details_code = props["statusMessage"]["error"]["details"].get("code", "")
-                            details_message = textwrap.TextWrapper(width=60).wrap(text=props["statusMessage"]["error"]["details"].get("message", ""))
-                            print(f"  Details  : {details_code}")
-                            for line in details_message:
-                                print(f"             {line}")
+                            def pretty_print(d, indent=0): 
+                                def wrapped_print(indent, text, max_width=80):
+                                    lines = textwrap.TextWrapper(width=max_width-indent).wrap(text=text)
+                                    for line in lines:
+                                        print(" "*indent + line)
+                                if isinstance(d, list):
+                                    for value in d:
+                                        pretty_print(value, indent)
+                                elif isinstance(d, dict):
+                                    for key, value in d.items(): 
+                                        if isinstance(value, dict): 
+                                            wrapped_print(indent, str(key)) 
+                                            pretty_print(value, indent+4)
+                                        elif isinstance(value, list):
+                                            wrapped_print(indent, str(key))
+                                            pretty_print(value, indent+4)
+                                        else: 
+                                            wrapped_print(indent, f"{key}: {value}")
+                                else:
+                                    wrapped_print(indent, str(d))
+                            pretty_print(props["statusMessage"]["error"]["details"], 13)
 
         sys.exit(1)
+
+def do_slurm_suspend(args):
+    log.debug(f"reading config file ({args.config_file})")
+    
+    c = azconfig.ConfigFile()
+    c.open(args.config_file)
+    config = c.preprocess()
+
+    log.info(f"slurm suspend for {args.nodes}")
+    # first get the resource name
+    all_resources = config.get("resources", [])
+    resource_name, brackets = re.search(r'([^[]*)\[?([\d\-\,]*)\]?', args.nodes).groups(0)
+    resource_list = []
+    if bool(brackets):
+        for part in brackets.split(","):
+            if "-" in part:
+                lo, hi = part.split("-")
+                assert len(lo) == 4, "expecting number width of 4"
+                assert len(hi) == 4, "expecting number width of 4"
+                for i in range(int(lo), int(hi) + 1):
+                    resource_list.append(f"{resource_name}{i:04d}")
+            else:
+                assert len(part) == 4, "expecting number width of 4"
+                resource_list.append(f"{resource_name}{part}")
+    else:
+        resource_list.append(resource_name)
+        resource_name = resource_name[:-4]
+    
+    subscription_id = azutil.get_subscription_id()
+    resource_group = config["resource_group"]
+
+    vm_ids = []
+    nic_ids = []
+    disk_ids = []
+    for resource in resource_list:
+        vm_ids.append(f"/subscriptions/{subscription_id}/resourceGroups/{resource_group}/providers/Microsoft.Compute/virtualMachines/{resource}")
+        nic_ids.append(f"/subscriptions/{subscription_id}/resourceGroups/{resource_group}/providers/Microsoft.Network/networkInterfaces/{resource}_nic")
+        disk_ids.append(f"/subscriptions/{subscription_id}/resourceGroups/{resource_group}/providers/Microsoft.Compute/disks/{resource}_osdisk")
+
+    # delete vms
+    log.debug("deleting vms: "+",".join(vm_ids))
+    azutil.delete_resources(vm_ids)
+    # delete nics and disks
+    log.debug("deleting nics and disks: "+",".join(nic_ids + disk_ids))
+    azutil.delete_resources(nic_ids + disk_ids)
+    log.debug("exiting do_slurm_suspend")
+
+def do_slurm_resume(args):
+    log.debug(f"reading config file ({args.config_file})")
+    while True:
+        timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        tmpdir = "azhpc_install_" + os.path.basename(args.config_file)[:-5] + "_" + timestamp
+        if not os.path.isdir(tmpdir):
+            break
+        log.warning(f"{tmpdir} already exists, sleeping for 5 seconds and retrying")
+        time.sleep(5)
+    log.debug(f"tmpdir = {tmpdir}")
+
+    c = azconfig.ConfigFile()
+    c.open(args.config_file)
+    config = c.preprocess()
+
+    adminuser = config["admin_user"]
+    private_key_file = adminuser+"_id_rsa"
+    public_key_file = adminuser+"_id_rsa.pub"
+
+    log.info(f"slurm resume for {args.nodes}")
+    # first get the resource name
+    all_resources = config.get("resources", [])
+    resource_name, brackets = re.search(r'([^[]*)\[?([\d\-\,]*)\]?', args.nodes).groups(0)
+    resource_list = []
+    if bool(brackets):
+        for part in brackets.split(","):
+            if "-" in part:
+                lo, hi = part.split("-")
+                assert len(lo) == 4, "expecting number width of 4"
+                assert len(hi) == 4, "expecting number width of 4"
+                for i in range(int(lo), int(hi) + 1):
+                    resource_list.append(f"{resource_name}{i:04d}")
+            else:
+                assert len(part) == 4, "expecting number width of 4"
+                resource_list.append(f"{resource_name}{part}")
+    else:
+        resource_list.append(resource_name)
+        resource_name = resource_name[:-4]
+    
+    template_resource = config.get("resources", {}).get(resource_name)
+    if not template_resource:
+        log.error(f"${res} resource not found in config")
+        sys.exit(1)
+    if template_resource.get("type") != "slurm_partition":
+        log.error(f"invalid resource type for scaling")
+    
+    template_resource["type"] = "vm"
+    del template_resource["instances"]
+
+    log.info(f"resource_name= {resource_name}")
+    log.info("resource_list= " + ",".join(resource_list))
+    
+    config["resources"] = {}
+    for rname in resource_list:
+        config["resources"][rname] = template_resource
+
+    tpl = arm.ArmTemplate()
+    tpl.read_resources(config, False)
+
+    output_template = f"deploy_{args.config_file}_{timestamp}"
+
+    log.info("writing out arm template to " + output_template)
+    with open(output_template, "w") as f:
+        f.write(tpl.to_json())
+
+    log.info("deploying arm template")
+    deployname = azutil.deploy(
+        config["resource_group"],
+        output_template
+    )
+    log.debug(f"deployment name: {deployname}")
+
+    _wait_for_deployment(config["resource_group"], deployname)
     
     log.info("building host lists")
     azinstall.generate_hostlists(config, tmpdir)
@@ -418,6 +537,68 @@ def do_build(args):
     azinstall.generate_install(config, tmpdir, adminuser, private_key_file, public_key_file)
     
     jumpbox = c.read_value("install_from")
+    resource_group = c.read_value("resource_group")
+    fqdn = c.get_install_from_destination()
+    log.debug(f"running script from : {fqdn}")
+    azinstall.run(config, tmpdir, adminuser, private_key_file, public_key_file, fqdn)
+
+def do_build(args):
+    log.debug(f"reading config file ({args.config_file})")
+    tmpdir = "azhpc_install_" + os.path.basename(args.config_file)[:-5]
+    log.debug(f"tmpdir = {tmpdir}")
+    if os.path.isdir(tmpdir):
+        log.debug("removing existing tmp directory")
+        shutil.rmtree(tmpdir)
+
+    c = azconfig.ConfigFile()
+    c.open(args.config_file)
+    config = c.preprocess()
+
+    adminuser = config["admin_user"]
+    private_key_file = adminuser+"_id_rsa"
+    public_key_file = adminuser+"_id_rsa.pub"
+    _create_private_key(private_key_file, public_key_file)
+
+    tpl = arm.ArmTemplate()
+    tpl.read(config, not args.no_vnet)
+
+    output_template = "deploy_"+args.config_file
+
+    log.info("writing out arm template to " + output_template)
+    with open(output_template, "w") as f:
+        f.write(tpl.to_json())
+
+    log.info("creating resource group " + config["resource_group"])
+
+    resource_tags = config.get("resource_tags", {})
+    azutil.create_resource_group(
+        config["resource_group"],
+        config["location"],
+        [
+            {
+                "key": "CreatedBy",
+                "value": os.getenv("USER")
+            },
+            {
+                "key": "CreatedOn",
+                "value": datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+            }
+        ] + [ { "key": key, "value": resource_tags[key] } for key in resource_tags.keys() ]
+    )
+    log.info("deploying arm template")
+    deployname = azutil.deploy(
+        config["resource_group"],
+        output_template
+    )
+    log.debug(f"deployment name: {deployname}")
+
+    _wait_for_deployment(config["resource_group"], deployname)
+    
+    log.info("building host lists")
+    azinstall.generate_hostlists(config, tmpdir)
+    log.info("building install scripts")
+    azinstall.generate_install(config, tmpdir, adminuser, private_key_file, public_key_file)
+    
     resource_group = c.read_value("resource_group")
     fqdn = c.get_install_from_destination()
     log.debug(f"running script from : {fqdn}")
@@ -465,6 +646,12 @@ if __name__ == "__main__":
         add_help=False,
         description="deploy the config",
         help="create an arm template and deploy"
+    )
+    build_parser.add_argument(
+        "--no-vnet", 
+        action="store_true",
+        default=False,
+        help="do not create vnet resources in the arm template"
     )
     build_parser.set_defaults(func=do_build)
 
@@ -583,7 +770,7 @@ if __name__ == "__main__":
         "--nodes", 
         "-n", 
         type=str,
-        help="the resources to run on (space separated for multiple)"
+        help="the resources to run on (comma separated for multiple)"
     )
     run_parser.add_argument(
         'args', 
@@ -613,7 +800,35 @@ if __name__ == "__main__":
         help="displays the resource uptime"
     )
     status_parser.set_defaults(func=do_status)
+
+    slurm_resume_parser = subparsers.add_parser(
+        "slurm_resume",
+        parents=[gopt_parser],
+        add_help=False,
+        help="resume VMs for slurm"
+    )
+    slurm_resume_parser.add_argument(
+        "nodes",
+        type=str,
+        help="the nodes in the slurm array format"
+    )
+    slurm_resume_parser.set_defaults(func=do_slurm_resume)
+
+    slurm_suspend_parser = subparsers.add_parser(
+        "slurm_suspend",
+        parents=[gopt_parser],
+        add_help=False,
+        help="suspend VMs for slurm"
+    )
+    slurm_suspend_parser.add_argument(
+        "nodes",
+        type=str,
+        help="the nodes in the slurm array format"
+    )
+    slurm_suspend_parser.set_defaults(func=do_slurm_suspend)
+
     args = azhpc_parser.parse_args()
+
 
     if args.debug:
         azlog.setDebug(True)

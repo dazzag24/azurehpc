@@ -5,19 +5,25 @@ param (
     [Parameter(Mandatory=$true)][string] $ad_password
     )
 
-#$ProgressPreference = 'SilentlyContinue'
-
 Write-Output $ad_domain
 Write-Output $ad_user
 Write-Output $ad_password
 
-
-#cd C:\Windows\Temp
-#Invoke-WebRequest -OutFile C:\Windows\rgs_trial.lic $lic_url
-#Invoke-WebRequest -OutFile SenderSetup64.exe $sw_url
-#.\SenderSetup64.exe /z"/autoinstall /agreetolicense /clipboard /rgslicensefile=C:\Windows\rgs_trial.lic /noreboot" -Wait
-Install-WindowsFeature AD-Domain-Services -IncludeAllSubFeature -IncludeManagementTools
-Install-WindowsFeature DNS -IncludeAllSubFeature -IncludeManagementTools
+#AD
+Install-WindowsFeature AD-Domain-Services -IncludeAllSubFeature -IncludeManagementTools >> D:\domain.log
+#DNS
+Install-WindowsFeature DNS -IncludeAllSubFeature -IncludeManagementTools >> D:\domain.log
+#NFS
+Install-WindowsFeature FS-NFS-Service -IncludeManagementTools >> D:\domain.log
+#SSH
+#Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
+#Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0
+#Install-Module -Force OpenSSHUtils -Scope AllUsers
+#Set-Service -Name ssh-agent -StartupType ‘Automatic’
+#Set-Service -Name sshd -StartupType ‘Automatic’
+#Start-Service ssh-agent
+#Start-Service sshd
+#become AD
 Install-ADDSForest `
    -CreateDnsDelegation:$false `
    -DomainName $ad_domain `
@@ -29,12 +35,6 @@ Install-ADDSForest `
    -LogPath C:\Windows\Logs `
    -NoRebootOnCompletion:$false `
    -Force `
-   -SafeModeAdministratorPassword (ConvertTo-SecureString $ad_password -AsPlainText -Force) > D:\domain.log
-#New-ADUser `
-#   -Name "hpcuser" `
-#   -GivenName "hpcuser" `
-#   -Surname "hpcuser" `
-#   -SamAccountName "hpcuser" `
-#   -UserPrincipalName "hpcuser@$ad_domain" `
-#   -AccountPassword(ConvertTo-SecureString $ad_password -AsPlainText -Force) `
-#   -Enabled $true > D:\user.log
+   -SafeModeAdministratorPassword (ConvertTo-SecureString $ad_password -AsPlainText -Force) >> D:\domain.log
+# Set-NfsMappingStore -EnableADLookup $true >> D:\domain.log
+shutdown.exe /r /t 00

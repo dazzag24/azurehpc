@@ -26,7 +26,7 @@ class ConfigFile:
         dest = install_from
         if install_from:
             if self.read_value(f"resources.{install_from}.public_ip", False):
-                dest = azutil.get_fqdn(self.read_value("resource_group"), f"{install_from}pip")
+                dest = azutil.get_fqdn(self.read_value("resource_group"), f"{install_from}_pip")
         log.debug(f"install_from destination : {dest}")
         return dest
 
@@ -128,19 +128,21 @@ class ConfigFile:
             else:
                 perm = x[1]
                 parts[-1] = x[0]
-            saskey = azutil.get_storage_saskey(parts[1], parts[2], perm)
+            container = parts[2].split('/')[0]
+            saskey = azutil.get_storage_saskey(parts[1], container, perm)
             log.debug(parts)
             path = ".".join(parts[2:])
             res = f"{url}{path}?{saskey}"
         elif prefix == "fqdn":
-            res = azutil.get_fqdn(self.read_value("resource_group"), parts[1]+"pip")
+            res = azutil.get_fqdn(self.read_value("resource_group"), parts[1]+"_pip")
         elif prefix == "sakey":
             res = azutil.get_storage_key(parts[1])
         elif prefix == "saskey":
             x = parts[2].split(",")
             if len(x) == 1:
                 x.append("r")
-            res = azutil.get_storage_saskey(parts[1], x[0], x[1])
+            container = x[0].split('/')[0]
+            res = azutil.get_storage_saskey(parts[1], container, x[1])
         elif prefix == "laworkspace":
             res = azutil.get_log_analytics_workspace(parts[1], parts[2])
         elif prefix == "lakey":

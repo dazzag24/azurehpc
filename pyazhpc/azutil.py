@@ -13,8 +13,17 @@ log = azlog.getLogger(__name__)
 def _make_subprocess_error_string(res):
     return "\n    args={}\n    return code={}\n    stdout={}\n    stderr={}".format(res.args, res.returncode, res.stdout.decode("utf-8"), res.stderr.decode("utf-8"))
 
-def get_subscription():
-    cmd = [ "az", "account", "show", "--output", "tsv", "--query", "[name,id]" ]
+def get_subscription_id():
+    cmd = [ "az", "account", "show", "--output", "tsv", "--query", "id" ]
+    res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if res.returncode != 0:
+        log.error("invalid returncode"+_make_subprocess_error_string(res))
+        sys.exit(1)
+    out = res.stdout.splitlines()
+    return out[0].decode("utf-8")
+
+def delete_resources(ids):
+    cmd = [ "az", "resource", "delete", "--ids" ] + ids
     res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if res.returncode != 0:
         log.error("invalid returncode"+_make_subprocess_error_string(res))
@@ -31,6 +40,24 @@ def get_vm_private_ip(resource_group, vm_name):
     ]
     res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if res.returncode != 0:
+        log.error("invalid returncode"+_make_subprocess_error_string(res))
+        sys.exit(1)
+    out = res.stdout.splitlines()
+    return out[0].decode("utf-8")
+
+def get_dns_label(resource_group, public_ip, ignore_errors):
+    cmd = [
+        "az", "network", "public-ip", "show",
+            "--resource-group", resource_group,
+            "--name", public_ip,
+            "--query", "dnsSettings.domainNameLabel",
+            "--output", "tsv"
+    ]
+    log.debug(" ".join(cmd))
+    res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if res.returncode != 0:
+        if ignore_errors:
+            return None
         log.error("invalid returncode"+_make_subprocess_error_string(res))
         sys.exit(1)
     out = res.stdout.splitlines()
@@ -109,6 +136,7 @@ def deploy(resource_group, arm_template):
             "--name", deployname,
             "--no-wait"
     ]
+    log.debug(" ".join(cmd))
     res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if res.returncode != 0:
         log.error("invalid returncode"+_make_subprocess_error_string(res))
@@ -138,10 +166,7 @@ def get_keyvault_secret(vault, key):
     res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if res.returncode != 0:
         log.error("invalid returncode"+_make_subprocess_error_string(res))
-    out = res.stdout.splitlines()
-    if len(out) != 1:
-        log.error("expected output"+_make_subprocess_error_string(res))
-    secret = out[0].decode('utf-8')
+    secret = res.stdout.decode('utf-8').rstrip('\r\n')
     return secret
 
 def get_storage_url(account):

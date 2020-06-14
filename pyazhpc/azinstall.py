@@ -24,6 +24,14 @@ cd "$( dirname "${{BASH_SOURCE[0]}}" )/.."
 
 tag=linux
 
+# wait for DNS to update for all hostnames
+for h in $(<hostlists/$tag); do
+    until host $h >/dev/null 2>&1; do
+        echo "Waiting for host - $h (sleeping for 5 seconds)"
+        sleep 5
+    done
+done
+
 if [ "$1" != "" ]; then
     tag=tags/$1
 else
@@ -45,7 +53,7 @@ EOF
 
 fi
 
-pssh -p {pssh_threads} -t 0 -i -h hostlists/$tag 'sudo yum install -y rsync' >> {logfile} 2>&1
+pssh -p {pssh_threads} -t 0 -i -h hostlists/$tag 'rpm -q rsync || sudo yum install -y rsync' >> {logfile} 2>&1
 
 prsync -p {pssh_threads} -a -h hostlists/$tag ~/{tmpdir} ~ >> {logfile} 2>&1
 prsync -p {pssh_threads} -a -h hostlists/$tag ~/.ssh ~ >> {logfile} 2>&1
@@ -69,6 +77,12 @@ tag=${{1:-{tag}}}
 
 if [ ! -f "hostlists/tags/$tag" ]; then
     echo "    Tag is not assigned to any resource (not running)"
+    exit 0
+fi
+
+if [ "$(wc -l < hostlists/tags/$tag)" = "0" ]; then
+    echo "    Tag does not contain any resources (not running)"
+    exit 0
 fi
 
 """
@@ -109,7 +123,8 @@ def create_local_script(inst, tmpdir, step):
     
     args = inst.get("args", [])
 
-    cmdline = " ".join([ "scripts/"+targetscript ] + [ f"'{arg}'" for arg in args ])
+    #cmdline = " ".join([ "scripts/"+targetscript ] + [ f"'{arg}'" for arg in args ])
+    cmdline = " ".join([ "scripts/"+targetscript ] + [ f'"{arg}"' for arg in args ])
     
     with open(scriptfile, "w") as f:
         os.chmod(scriptfile, 0o755)
@@ -177,6 +192,7 @@ def _create_anf_mount_scripts(cfg, scriptfile):
     script = """#!/bin/bash
 yum install -y nfs-utils
 """
+    script_end = ""
     resource_group = cfg["resource_group"]
     # loop over all anf accounts
     accounts = [ x for x in cfg.get("storage",{}) if cfg["storage"][x]["type"] == "anf" ]
@@ -189,11 +205,14 @@ yum install -y nfs-utils
                 mount_point = cfg["storage"][account]["pools"][pool]["volumes"][volume]["mount"]
                 script += f"""
 mkdir -p {mount_point}
-chmod 777 {mount_point}
 echo "{ip}:/{volume} {mount_point} nfs bg,rw,hard,noatime,nolock,rsize=65536,wsize=65536,vers=3,tcp,_netdev 0 0" >>/etc/fstab
 """
-    script += """
+                script_end += f"""
+chmod 777 {mount_point}
+"""
+    script += f"""
 mount -a
+{script_end}
 """
     with open(scriptfile, "w") as f:
         os.chmod(scriptfile, 0o755)
@@ -231,13 +250,21 @@ def generate_install(cfg, tmpdir, adminuser, sshprivkey, sshpubkey):
         
         for script in [ step["script"] ] + step.get("deps", []):
             if os.path.exists(f"scripts/{script}"):
-                log.debug(f"using script from this project ({script})")
-                shutil.copy(f"scripts/{script}", tmpdir+"/scripts")
+                if os.path.isdir(f"scripts/{script}"):
+                    log.debug(f"using dir from this project ({script})")
+                    shutil.copytree(f"scripts/{script}", f"{tmpdir}/scripts/{script}")
+                else:
+                    log.debug(f"using script from this project ({script})")
+                    shutil.copy(f"scripts/{script}", tmpdir+"/scripts")
             elif os.path.exists(f"{os.getenv('azhpc_dir')}/scripts/{script}"):
-                log.debug(f"using azhpc script ({script})")
-                shutil.copy(f"{os.getenv('azhpc_dir')}/scripts/{script}", tmpdir+"/scripts")
+                if os.path.isdir(f"{os.getenv('azhpc_dir')}/scripts/{script}"):
+                    log.debug(f"using azhpc dir ({script})")
+                    shutil.copytree(f"{os.getenv('azhpc_dir')}/scripts/{script}", f"{tmpdir}/scripts/{script}")
+                else:
+                    log.debug(f"using azhpc script ({script})")
+                    shutil.copy(f"{os.getenv('azhpc_dir')}/scripts/{script}", tmpdir+"/scripts")
             else:
-                log.error(f"cannot find script ({script})")
+                log.error(f"cannot find script/dir ({script})")
                 sys.exit(1)
 
 def _make_subprocess_error_string(res):
