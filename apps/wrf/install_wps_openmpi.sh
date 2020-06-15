@@ -51,3 +51,5 @@ cd WPS-${APP_VERSION}
 EOF
 
 ./compile
+
+create_modulefile
