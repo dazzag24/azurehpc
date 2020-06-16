@@ -5,6 +5,7 @@ APP_VERSION=4.1
 SKU_TYPE=${SKU_TYPE:-hb}
 SHARED_APP=${SHARED_APP:-/apps}
 WRF_VERSION=${WRF_VERSION:-4.1.5}
+APP_DIR=${SHARED_APP}/${SKU_TYPE}/${APP_NAME}-openmpi
 OPENMPI_VER=4.0.3
 
 sudo yum install -y jasper-devel
